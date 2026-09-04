@@ -124,6 +124,12 @@ toward 0.5 — while the other models he tested were fine untreated.
 | 8 | 220 | 0.8299 | 0.7818 | +0.0481 |
 | 9 | 8 | 0.9182 | 0.7500 | +0.1682 |
 
+![Reliability curve](plots/reliability_curve.png)
+
+*Marker size is proportional to bin count. The curve sits above the diagonal
+through the middle of the range — the model under-predicts where most orders
+are.*
+
 Bins 1–6 are all negative — a consistent under-prediction across the middle of
 the range, where roughly 13,000 of 16,000 orders sit. That's base-rate drift,
 not miscalibration: the training period returns at 46.7% and validation at
@@ -150,6 +156,14 @@ logistics cost stays roughly fixed. On a cheap item there's little margin to
 protect, so a modest suspicion justifies acting. On an expensive one, blocking
 throws away a lot to avoid a little, so it takes much stronger evidence. A
 ₹1,299 order at 40% margin gives τ ≈ 0.73; a ₹4,500 order at 55% gives τ ≈ 0.90.
+
+![Threshold versus item price](plots/tau_vs_price_full.png)
+
+*Dots mark each profile's median order value. The three fashion curves nearly
+overlap — τ at a given price is driven mostly by margin rate — but the profiles
+sit at very different points along them, because their typical order values
+differ by 30×. Electronics separates because an 8% margin against a ₹510 return
+cost is a different ratio entirely.*
 
 Average profit per order, validation period:
 
@@ -253,6 +267,50 @@ intervenes on 65% of orders.
 
 ---
 
+## The scoring API
+
+`ReturnRisk.Api` is an ASP.NET Core service that loads the trained model at
+startup and exposes a single endpoint.
+
+**POST `/score`** takes the 62-element feature vector, the item price, and a
+merchant profile (median order value, margin rate, shipping per leg, handling).
+It returns the model's probability, the τ computed for that specific order and
+merchant, the allow/intervene decision, and the expected profit of each choice.
+
+Returning both expected profits rather than a bare verdict is deliberate: a
+support agent handling a blocked order needs to see the reasoning, not just the
+outcome.
+
+The endpoint validates the feature-vector length up front and returns 400 on a
+mismatch, rather than letting the model produce a plausible score from the wrong
+number of inputs. Scoring goes through `PredictionEnginePool`, since
+`PredictionEngine` is not thread-safe and a web service handles requests
+concurrently.
+
+The trained model (`returnrisk-model.zip`, 182 KB) is committed, so the API runs
+from a clone without regenerating it.
+
+### Latency
+
+Measured over 1,000 iterations after 100 discarded warm-up calls, on one machine
+with client and server as separate local processes.
+
+| Tier | p50 | p99 |
+|---|---|---|
+| In-process (model + τ) | 0.004–0.007 ms | 0.005–0.042 ms |
+| HTTP round trip (incl. JSON) | 0.56–1.64 ms | 1.5–19.7 ms |
+
+Ranges span three runs. The HTTP tail was unstable — p99 varied by more than 10×
+between runs — and a single-machine benchmark where both processes compete for
+the same cores cannot measure tail latency reliably, so I'm reporting the spread
+rather than picking a favourable number.
+
+What holds regardless: in-process scoring costs single-digit microseconds. The
+model is not the bottleneck in a checkout budget measured in tens of
+milliseconds; the network path is.
+
+---
+
 ## What broke
 
 **The ten target-encoded column names were wrong.** I typed them from memory
@@ -345,16 +403,110 @@ ten target-encoded ones. Without the raw data I couldn't build my own.
 windows or repeated resampling, so there are no confidence intervals around
 these numbers.
 
+## Operational considerations
+
+Three things a production deployment would have to solve that this study
+doesn't. They're design problems rather than missing features, so they're
+reasoned through here rather than built.
+
+### Training/serving skew
+
+In training, the historical aggregations were already sitting in the static
+file. I trained on `known_transformed.csv`, where all 62 features were
+precomputed — customer lifetime value, days since last purchase, account age,
+size deviation from that user's average, all ready.
+
+At live checkout the API only receives the raw cart payload: customer ID, item
+ID, price, category. To produce the 62 inputs it would have to query past order
+tables, run the aggregations, and compute deviations against a baseline — all
+inside a sub-50ms window.
+
+The exposure is that the offline feature generation would have to be rewritten
+in the backend. If the two definitions diverge even subtly — the offline script
+counting cancelled orders toward LTV while the API doesn't, or recency measured
+from order placement in one and warehouse dispatch in the other — the model
+receives inputs that don't match what it learned from. This doesn't crash. It
+degrades calibration and accuracy silently.
+
+This project is especially exposed because it doesn't rely on simple item specs;
+it relies mostly on multi-order historical customer behaviour. The fix would be
+a centralised feature store — an online cache paired with offline storage — or a
+single shared transformation library, so training-set generation and production
+scoring use the exact same code.
+
+### Cold start
+
+The model relies heavily on historical user habits and product return rates. A
+first-time customer has empty historical features, and a newly listed item has
+no sales history. Left unhandled, a zero-valued feature reads as "zero
+historical returns" or "zero LTV" rather than "unknown" — so the model treats an
+unknown customer as a known-good one.
+
+A production approach would work in three levels. **User cold start:** impute
+missing history with population-level or segment-level medians rather than raw
+zeros. **Item cold start:** fall back to brand or sub-category aggregates until
+the specific SKU gathers enough transaction volume. **Decision guardrail:** for
+cold-start orders, tighten the intervention threshold or defer intervention
+entirely, to avoid friction on a customer's first checkout.
+
+### Delayed feedback and the intervention loop
+
+Unlike click-through prediction, where feedback arrives in seconds, a return
+takes days to materialise. An order placed today delivers in four days, carries
+a 15–30 day return window, and then needs reverse logistics — so ground truth
+matures 30 to 45 days after the scoring event.
+
+That creates a retraining trap. If you retrain on recent orders — say the last
+two weeks — every order that hasn't been returned *yet* looks like a kept order,
+which heavily undercounts actual returns and skews the training data. Retraining
+datasets have to enforce an observation lag window.
+
+There's a second-order problem too. When the system intervenes it actively
+alters user behaviour. If an intervention successfully prevents a return, the
+recorded label is 0 — and naive retraining reads that as "this order was
+naturally low risk," so the model unlearns the very risk it just mitigated. The
+fix is to log intervention treatment alongside the raw prediction, and maintain
+an untreated holdout control group to monitor baseline return rates.
+
+That control group is the same mechanism as the 5% holdout in Finding 4, arrived
+at from a different direction: there it preserved label coverage in the blocked
+region, here it preserves an untreated baseline. One holdout serves both.
+
+### Also outstanding
+
+A production deployment would additionally need: defined fallback behaviour when
+the model is unavailable (allow or block, and which costs less); merchant
+override lists sitting above the model; bounds and review on the margin and
+shipping inputs that drive τ, since those are merchant-supplied and drive
+automated money decisions; monitoring on intervention rate rather than AUC,
+because the realistic failure is a rate spike nobody notices for days; shadow
+deployment before any model swap; and an explainability path so support can
+answer why a specific order was blocked. Each needs design work not done here.
+
 ## Running it
 
+Two projects.
+
+**`ReturnRisk`** — the console app that runs all experiments, trains the model,
+generates the charts, and benchmarks latency:
+
 ```
-dotnet restore
-dotnet run
+dotnet run --project ReturnRisk
 ```
 
 Requires `known_transformed.csv` in the working directory. It isn't committed —
 it's the retailer's data, not mine to redistribute. It's available from
 Engelmann's repository, linked below.
+
+**`ReturnRisk.Api`** — the scoring service:
+
+```
+dotnet run --project ReturnRisk.Api
+```
+
+Runs from a clone without the CSV, since the trained model is committed. Swagger
+is enabled for testing the endpoint; the console app prints a sample feature
+vector you can paste in.
 
 ## References
 

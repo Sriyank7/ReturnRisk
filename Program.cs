@@ -4,6 +4,7 @@ using Microsoft.ML;
 using Microsoft.ML.Data;
 using ReturnRisk.Core;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 
@@ -76,6 +77,7 @@ string modelPath = Path.Combine(AppContext.BaseDirectory, "returnrisk-model.zip"
 mlContext.Model.Save(modelA, trainNoCe.Schema, modelPath);
 
 Console.WriteLine($"\n[Model Export] Model successfully saved to: {modelPath}");
+
 // 5. Print first test row features and expected probability for Swagger testing
 var firstOrder = testRows.First();
 float firstProb = probs[0];
@@ -88,14 +90,27 @@ Console.WriteLine($"Expected Model Probability: {firstProb:F4}");
 Console.WriteLine($"Sample Price: {firstPrice:F2}");
 Console.WriteLine("\nFeatures JSON Array (paste into 'features' field):");
 Console.WriteLine("[" + string.Join(", ", firstOrder.Features.Select(f => f.ToString("G7"))) + "]");
-Console.WriteLine("=======================================================\n");
-// 6. Latency Benchmarking Setup
-var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+Console.WriteLine("=======================================================");
+
+// 6. Generate Reliability and Tau Charts
+var bins = Experiments.ComputeReliability(probs, labels);
+string plotDir = Path.Combine(AppContext.BaseDirectory, "plots");
+Directory.CreateDirectory(plotDir);
+
+string reliabilityPath = Path.Combine(plotDir, "reliability_curve.png");
+Plotting.GenerateReliabilityCurve(bins, reliabilityPath);
+
+string tauFull = Path.Combine(plotDir, "tau_vs_price_full.png");
+string tauZoomed = Path.Combine(plotDir, "tau_vs_price_zoomed.png");
+Plotting.GenerateTauVsPrice(tauFull, 20000.0);
+Plotting.GenerateTauVsPrice(tauZoomed, 3000.0);
+
+// 7. Latency Benchmarking Setup
+var services = new ServiceCollection();
 services.AddPredictionEnginePool<OrderScoringInput, OrderScoringOutput>()
     .FromFile("ReturnRisk", modelPath);
 var serviceProvider = services.BuildServiceProvider();
-var pool = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
-    .GetRequiredService<Microsoft.Extensions.ML.PredictionEnginePool<OrderScoringInput, OrderScoringOutput>>(serviceProvider);
+var pool = serviceProvider.GetRequiredService<PredictionEnginePool<OrderScoringInput, OrderScoringOutput>>();
 
 var benchmarkRequest = new ScoreRequest(
     Features: firstOrder.Features,
@@ -106,5 +121,9 @@ var benchmarkRequest = new ScoreRequest(
 // Match your API port from Swagger (e.g. 7163)
 string apiBaseUrl = "https://localhost:7163";
 
-Console.WriteLine("Starting latency benchmark against " + apiBaseUrl + " ...");
+Console.WriteLine("\nStarting latency benchmark against " + apiBaseUrl + " ...");
 await LatencyBenchmark.Run(pool, apiBaseUrl, benchmarkRequest);
+Console.WriteLine($"Stopwatch HighRes: {Stopwatch.IsHighResolution}, Freq: {Stopwatch.Frequency}");
+
+Console.WriteLine("\nDone! Press any key to exit...");
+Console.ReadKey();

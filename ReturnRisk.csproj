@@ -12,6 +12,7 @@
     <PackageReference Include="Microsoft.ML" Version="5.0.0" />
     <PackageReference Include="Microsoft.ML.FastTree" Version="5.0.0" />
     <PackageReference Include="Microsoft.ML.LightGbm" Version="5.0.0" />
+    <PackageReference Include="ScottPlot" Version="5.1.59" />
   </ItemGroup>
 
   <ItemGroup>
