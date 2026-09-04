@@ -14,7 +14,9 @@ var mlContext = new MLContext(seed: 42);
 var loader = new DataLoader(mlContext);
 var runner = new Experiments(mlContext);
 
-string dataPath = "known_transformed.csv";
+string dataPath = File.Exists("known_transformed.csv")
+    ? "known_transformed.csv"
+    : Path.Combine("ReturnRisk", "known_transformed.csv");
 
 // 1. Load both Honest (No CE) and Leaky (With CE) datasets
 var dataNoCe = loader.Load(dataPath, includeTargetEncoded: false);
@@ -105,7 +107,25 @@ string tauZoomed = Path.Combine(plotDir, "tau_vs_price_zoomed.png");
 Plotting.GenerateTauVsPrice(tauFull, 20000.0);
 Plotting.GenerateTauVsPrice(tauZoomed, 3000.0);
 
-// 7. Latency Benchmarking Setup
+// Also copy generated plots straight to root plots/ so markdown links never break
+try
+{
+    string rootPlotDir = Directory.Exists("plots")
+        ? "plots"
+        : (Directory.Exists(Path.Combine("..", "plots")) ? Path.Combine("..", "plots") : "plots");
+
+    Directory.CreateDirectory(rootPlotDir);
+    File.Copy(reliabilityPath, Path.Combine(rootPlotDir, "reliability_curve.png"), overwrite: true);
+    File.Copy(tauFull, Path.Combine(rootPlotDir, "tau_vs_price_full.png"), overwrite: true);
+    File.Copy(tauZoomed, Path.Combine(rootPlotDir, "tau_vs_price_zoomed.png"), overwrite: true);
+    Console.WriteLine($"[Plots Synced] Copied latest charts to: {Path.GetFullPath(rootPlotDir)}");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[Warning] Could not auto-sync plots to root: {ex.Message}");
+}
+
+// 7. Latency Benchmarking Setup (with safe try-catch guard)
 var services = new ServiceCollection();
 services.AddPredictionEnginePool<OrderScoringInput, OrderScoringOutput>()
     .FromFile("ReturnRisk", modelPath);
@@ -118,12 +138,20 @@ var benchmarkRequest = new ScoreRequest(
     Merchant: CostModel.ValueFashion
 );
 
-// Match your API port from Swagger (e.g. 7163)
+// Targets the HTTPS port used by Visual Studio / launchSettings profile
 string apiBaseUrl = "https://localhost:7163";
 
 Console.WriteLine("\nStarting latency benchmark against " + apiBaseUrl + " ...");
-await LatencyBenchmark.Run(pool, apiBaseUrl, benchmarkRequest);
-Console.WriteLine($"Stopwatch HighRes: {Stopwatch.IsHighResolution}, Freq: {Stopwatch.Frequency}");
+try
+{
+    await LatencyBenchmark.Run(pool, apiBaseUrl, benchmarkRequest);
+    Console.WriteLine($"Stopwatch HighRes: {Stopwatch.IsHighResolution}, Freq: {Stopwatch.Frequency}");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"\n[Latency Benchmark Skipped] API not reachable at {apiBaseUrl}: {ex.Message}");
+    Console.WriteLine("To run HTTP latency benchmarks, start ReturnRisk.Api first.");
+}
 
 Console.WriteLine("\nDone! Press any key to exit...");
 Console.ReadKey();
