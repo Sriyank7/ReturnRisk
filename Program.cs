@@ -1,9 +1,11 @@
-﻿using System;
-using System.IO;
-using System.Linq;
+﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.ML;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using ReturnRisk.Core;
+using System;
+using System.IO;
+using System.Linq;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -68,3 +70,41 @@ Console.WriteLine($"\n--- Operational Metrics on Test ({profile.Name} @ Cost-Opt
 Console.WriteLine($"Intervention Rate: {interventionRate * 100:F2}%");
 Console.WriteLine($"Precision:         {precision:F4} ({tp} correct interventions / {tp + fp} total)");
 Console.WriteLine($"Recall:            {recall:F4} ({tp} intercepted returns / {tp + fn} total returns)");
+
+// 4. Save the trained production model (Config A)
+string modelPath = Path.Combine(AppContext.BaseDirectory, "returnrisk-model.zip");
+mlContext.Model.Save(modelA, trainNoCe.Schema, modelPath);
+
+Console.WriteLine($"\n[Model Export] Model successfully saved to: {modelPath}");
+// 5. Print first test row features and expected probability for Swagger testing
+var firstOrder = testRows.First();
+float firstProb = probs[0];
+double firstPrice = scaledPrices[0];
+
+Console.WriteLine("\n=======================================================");
+Console.WriteLine("             SWAGGER TEST PAYLOAD DATA                 ");
+Console.WriteLine("=======================================================");
+Console.WriteLine($"Expected Model Probability: {firstProb:F4}");
+Console.WriteLine($"Sample Price: {firstPrice:F2}");
+Console.WriteLine("\nFeatures JSON Array (paste into 'features' field):");
+Console.WriteLine("[" + string.Join(", ", firstOrder.Features.Select(f => f.ToString("G7"))) + "]");
+Console.WriteLine("=======================================================\n");
+// 6. Latency Benchmarking Setup
+var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+services.AddPredictionEnginePool<OrderScoringInput, OrderScoringOutput>()
+    .FromFile("ReturnRisk", modelPath);
+var serviceProvider = services.BuildServiceProvider();
+var pool = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+    .GetRequiredService<Microsoft.Extensions.ML.PredictionEnginePool<OrderScoringInput, OrderScoringOutput>>(serviceProvider);
+
+var benchmarkRequest = new ScoreRequest(
+    Features: firstOrder.Features,
+    Price: firstPrice,
+    Merchant: CostModel.ValueFashion
+);
+
+// Match your API port from Swagger (e.g. 7163)
+string apiBaseUrl = "https://localhost:7163";
+
+Console.WriteLine("Starting latency benchmark against " + apiBaseUrl + " ...");
+await LatencyBenchmark.Run(pool, apiBaseUrl, benchmarkRequest);

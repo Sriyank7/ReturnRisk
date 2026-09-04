@@ -1,14 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36408.4 d17.14
+VisualStudioVersion = 17.14.36408.4
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReturnRisk", "ReturnRisk.csproj", "{0FF21DE6-676E-4DF2-8372-3F61168E4B39}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{8EC462FD-D22E-90A8-E5CE-7E832BA40C5D}"
-	ProjectSection(SolutionItems) = preProject
-		DataLoader.cs = DataLoader.cs
-	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReturnRisk.Api", "..\ReturnRisk.Api\ReturnRisk.Api.csproj", "{FE925A0F-E36F-4727-95FF-A84C3A18345E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -20,6 +19,10 @@ Global
 		{0FF21DE6-676E-4DF2-8372-3F61168E4B39}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0FF21DE6-676E-4DF2-8372-3F61168E4B39}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0FF21DE6-676E-4DF2-8372-3F61168E4B39}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FE925A0F-E36F-4727-95FF-A84C3A18345E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FE925A0F-E36F-4727-95FF-A84C3A18345E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FE925A0F-E36F-4727-95FF-A84C3A18345E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FE925A0F-E36F-4727-95FF-A84C3A18345E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
